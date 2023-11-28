@@ -1,0 +1,75 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <Wire.h>
+#include <U8glib.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_DEV_0 | U8G_I2C_OPT_FAST);
+
+void displayMessageOnOLED(String message) {
+  u8g.firstPage();
+  do {
+    u8g.setFont(u8g_font_6x10);
+
+    // Split the message into lines and display each line
+    int yOffset = 15;
+    int lineHeight = 10;
+
+    int start = 0;
+    int end = message.indexOf('\n');
+    while (end >= 0) {
+      String line = message.substring(start, end);
+      u8g.drawStr(0, yOffset, line.c_str());
+      yOffset += lineHeight;
+      start = end + 1;
+      end = message.indexOf('\n', start);
+    }
+
+    // Display the last line
+    if (start < message.length()) {
+      String lastLine = message.substring(start);
+      u8g.drawStr(0, yOffset, lastLine.c_str());
+    }
+  } while (u8g.nextPage());
+}
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  while (!Serial);
+
+  Serial.println("LoRa Receiver");
+
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+
+  u8g.begin();
+}
+
+void loop() {
+  int packetSize = LoRa.parsePacket();
+  Serial.print("Received packet size: ");
+  Serial.println(packetSize);
+  if (packetSize) {
+    char buffer[64];  // Adjust the size based on your message length
+    int i = 0;
+
+    while (LoRa.available()) {
+      char c = LoRa.read();
+      buffer[i++] = c;
+    }
+
+    buffer[i] = '\0';  // Null-terminate the received string
+    Serial.print("Received packet '");
+    Serial.print(buffer);
+    Serial.print("' with RSSI ");
+    Serial.println(LoRa.packetRssi());
+
+    // Display the received message on the OLED
+    displayMessageOnOLED(buffer);
+    delay(5000);  // Display for 5 seconds, adjust as needed
+  }
+}
