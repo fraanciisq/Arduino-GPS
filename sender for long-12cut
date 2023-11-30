@@ -1,0 +1,53 @@
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <LoRa.h>
+
+int RXPin = 2;
+int TXPin = 3;
+int GPSBaud = 9600;
+
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(RXPin, TXPin);
+
+void setup() {
+  Serial.begin(9600);
+  gpsSerial.begin(GPSBaud);
+
+  // Initialize LoRa
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+}
+
+void loop() {
+  while (gpsSerial.available() > 0) {
+    if (gps.encode(gpsSerial.read())) {
+      sendGPSData();
+    }
+  }
+
+  if (millis() > 10000 && gps.charsProcessed() < 10) {
+    Serial.println("No GPS detected");
+    while (true);
+  }
+}
+
+void sendGPSData() {
+  if (gps.location.isValid()) {
+    String message = " Latitude: \n        " + String(gps.location.lat(), 6) + "\n Longitude: \n        " + String(gps.location.lng(), 6);
+    
+    // Send the message via LoRa
+    LoRa.beginPacket();
+    LoRa.print(message);
+    LoRa.endPacket();
+
+    Serial.println("Sent packet: " + message);
+  }
+  else {
+    Serial.println("Location: Not Available");
+  }
+
+  delay(10000); // 10 seconds delay
+}
