@@ -1,0 +1,245 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <LoRa.h>
+
+int RXPin = 2;
+int TXPin = 3;
+int GPSBaud = 9600;
+
+// calibrate values of LED indication limit, 420 < green, 421 - 490 yellow, 490 up red.
+int lowerThreshold = 390;
+int upperThreshold = 425;
+//for sensors
+#define sensorPower 7
+#define sensorPin A0
+// for the button pins
+#define buttonPin 8
+//buzzer
+#define buzzerPin 6
+//reset button
+#define resetButtonPin 5
+
+
+//FOR LORA
+#define loraSCK 13
+#define loraMISO 12
+#define loraMOSI 11
+#define loraCS 10
+#define loraRST 9
+#define loraDI0 1
+
+
+// Value for storing water level
+int val = 0;
+
+// Declare pins to which LEDs are connected
+int redLED = A1;
+int yellowLED = A2;
+int greenLED = A3;
+
+
+// Set the LCD address (adjust according to your specific LCD module)
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // 0x27 is the default I2C address for many LCD modules
+
+bool buzzerOn = false;
+bool offButtonPressed = false;
+unsigned long buzzerStartTime = 0;
+unsigned long buzzerOffTime = 0;
+unsigned long buzzerActivationTime = 0;
+
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(RXPin, TXPin);
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  gpsSerial.begin(GPSBaud);
+
+  pinMode(sensorPower, OUTPUT);
+  digitalWrite(sensorPower, LOW);
+
+  pinMode(redLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  pinMode(greenLED, OUTPUT);
+
+  // Button setup
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // Buzzer setup
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW); // Initially turn off the buzzer
+
+  // Reset button setup
+  pinMode(resetButtonPin, INPUT_PULLUP);
+
+    // LoRa setup
+  SPI.begin();
+  LoRa.setPins(loraCS, loraRST, loraDI0);
+
+  Serial.println("LoRa is Now Ready");
+
+
+  // Initialize LoRa
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+  // Initially turn off all LEDs
+  digitalWrite(redLED, LOW);
+  digitalWrite(yellowLED, LOW);
+  digitalWrite(greenLED, LOW);
+
+  // Initialize the LCD
+  lcd.init();
+  lcd.backlight();  // Turn on the backlight
+  lcd.setCursor(0, 0);
+  lcd.print("Level: Empty");
+  lcd.setCursor(0, 1);
+  lcd.print("Value: 0   ");
+}
+
+void loop() {
+  int level = readSensor();
+
+  lcd.setCursor(7, 0);
+  lcd.print(getWaterLevelString(level)); // Display water level
+
+  lcd.setCursor(0, 1);
+  lcd.print("Value: ");
+  lcd.print((level == 0) ? 0 : val); // Display sensor value as 0 if water level is Empty
+  lcd.print("   ");  // Clear any remaining characters
+
+  // Check the button state
+  if (digitalRead(buttonPin) == LOW) {
+    // Button is pressed, consider it a false alarm for high water level
+    level = lowerThreshold - 1;
+    Serial.println("SOS Button Pressed!");
+
+    // Trigger two beeps on the buzzer
+    for (int i = 0; i < 2; i++) {
+      digitalWrite(buzzerPin, HIGH);
+      delay(500); // Buzzer on for 0.5 seconds
+
+      // Send a LoRa message for false alarm
+      while (gpsSerial.available() > 0)
+        if (gps.encode(gpsSerial.read()))
+          sendGPSData();
+
+      // If 5000 milliseconds pass and there are no characters coming in
+      // over the software serial port, show a "No GPS detected" error
+      if (millis() > 3000 && gps.charsProcessed() < 10) {
+        Serial.println("No GPS detected");
+        while (true);
+      }
+
+      digitalWrite(buzzerPin, LOW);
+      delay(500); // Wait for 0.5 seconds
+    }
+  } else if (level == 0) {
+    Serial.println("Water Level: Empty");
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, LOW);
+    digitalWrite(buzzerPin, LOW); // Turn off the buzzer for low water level
+    buzzerOn = false; // Reset buzzer state
+  } else if (level > 0 && level <= lowerThreshold) {
+    Serial.println("Water Level: Low");
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, HIGH);
+    buzzerOn = false; // Reset buzzer state
+  } else if (level > lowerThreshold && level <= upperThreshold) {
+    Serial.println("Water Level: Medium");
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, HIGH);
+    digitalWrite(greenLED, LOW);
+    buzzerOn = false; // Reset buzzer state
+  } else if (level > upperThreshold) {
+    Serial.println("Water Level: High");
+    digitalWrite(redLED, HIGH);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, LOW);
+
+    // Check if the buzzer is already on
+    if (!buzzerOn) {
+      // If not, set the start time
+      buzzerStartTime = millis();
+      buzzerOn = true;
+    }
+
+    // Sound the buzzer with a specific pattern
+    if (millis() - buzzerStartTime >= 10000) {
+      digitalWrite(buzzerPin, HIGH); // Turn on the buzzer
+      while (gpsSerial.available() > 0) {
+            if (gps.encode(gpsSerial.read())) {
+              // Fetch GPS data and send LoRa message with GPS information
+              sendGPSData();
+              digitalWrite(buzzerPin, LOW);
+              }
+            }
+
+            if (millis() > 3000 && gps.charsProcessed() < 10) {
+            Serial.println("No GPS detected");
+            while (true);
+          }
+    } else {
+      digitalWrite(buzzerPin, LOW); // Turn off the buzzer
+    }
+  }
+
+  delay(1000);
+}
+
+// This is a function used to get the reading
+int readSensor() {
+  digitalWrite(sensorPower, HIGH);
+  delay(10);
+  val = analogRead(sensorPin);
+  digitalWrite(sensorPower, LOW);
+  return val;
+}
+
+// Helper function to get water level string
+String getWaterLevelString(int level) {
+  if (level == 0) {
+    return "Empty   ";
+  } else if (level > 0 && level <= lowerThreshold) {
+    return "Low     ";
+  } else if (level > lowerThreshold && level <= upperThreshold) {
+    return "Medium  ";
+  } else {
+    return "High    ";
+  }
+}
+
+// Function to send a LoRa message
+void sendLoRaMessage(String message) {
+  Serial.print("Sending LoRa message: ");
+  Serial.println(message); 
+
+  LoRa.beginPacket();
+  LoRa.print(message);
+  LoRa.endPacket();
+}
+
+void sendGPSData() {
+  if (gps.location.isValid()) {
+    String message = " Latitude: \n        " + String(gps.location.lat(), 6) + "\n Longitude: \n        " + String(gps.location.lng(), 6);
+    
+    // Send the message via LoRa
+    LoRa.beginPacket();
+    LoRa.print(message);
+    LoRa.endPacket();
+
+    Serial.println("Sent packet: " + message);
+  }
+  else {
+    LoRa.print("Location: Not Available");
+    Serial.println("Location: Not Available");
+  }
+
+  delay(500); // 10 seconds delay
+}
