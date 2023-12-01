@@ -1,0 +1,108 @@
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <LoRa.h>
+
+// Choose two Arduino pins to use for software serial
+int RXPin = 2;
+int TXPin = 3;
+int buttonPin = 8;  // Pin where the button is connected
+int GPSBaud = 9600;
+
+// Create a TinyGPS++ object
+TinyGPSPlus gps;
+
+// Create a software serial port called "gpsSerial"
+SoftwareSerial gpsSerial(RXPin, TXPin);
+
+// LoRa pins
+#define loraSCK 13
+#define loraMISO 12
+#define loraMOSI 11
+#define loraCS 10
+#define loraRST 9
+#define loraDI0 1
+
+void setup()
+{
+  // Start the Arduino hardware serial port at 9600 baud
+  Serial.begin(9600);
+
+  // Start the software serial port at the GPS's default baud
+  gpsSerial.begin(GPSBaud);
+
+  // Set button pin as input
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // LoRa setup
+  SPI.begin();
+  LoRa.setPins(loraCS, loraRST, loraDI0);
+
+  Serial.println("LoRa Sender");
+
+  if (!LoRa.begin(433E6))
+  {
+    Serial.println("Starting LoRa failed!");
+    while (1)
+      ;
+  }
+}
+
+void loop()
+{
+  // Check if the button is pressed
+  if (digitalRead(buttonPin) == LOW)
+  {
+    // This sketch displays information every time a new sentence is correctly encoded.
+    while (gpsSerial.available() > 0)
+    {
+      if (gps.encode(gpsSerial.read()))
+      {
+        // Attempt to send coordinates
+        while (!sendCoordinates())
+        {
+          // If sending fails, keep attempting until successful
+          delay(1000);  // Adjust the delay as needed
+        }
+      }
+    }
+  }
+}
+
+bool sendCoordinates()
+{
+  if (gps.location.isValid())
+  {
+    // Construct the message with latitude and longitude data
+    String message = "Latitude: " + String(gps.location.lat(), 6) + "\n";
+    message += "Longitude: " + String(gps.location.lng(), 6) + "\n";
+
+    // Send the LoRa message
+    return sendLoRaMessage(message);
+  }
+  else
+  {
+    Serial.println("Location: Not Available");
+    return false;
+  }
+}
+
+// Function to send a LoRa message
+bool sendLoRaMessage(String message)
+{
+  Serial.print("Sending LoRa message: ");
+  Serial.println(message);
+
+  LoRa.beginPacket();
+  LoRa.print(message);
+  if (LoRa.endPacket() == 1)
+  {
+    Serial.println("LoRa message sent successfully!");
+    return true;
+  }
+  else
+  {
+    Serial.println("LoRa message send failed.");
+    return false;
+  }
+}
