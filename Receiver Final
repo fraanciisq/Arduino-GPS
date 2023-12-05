@@ -1,0 +1,110 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <Wire.h>
+#include <U8glib.h>
+#include <SoftwareSerial.h>  // Add this line
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_DEV_0 | U8G_I2C_OPT_FAST);
+
+// SIM800L related configurations
+#define SIM800_TX A1  // Connect SIM800L TX to Arduino digital pin 8
+#define SIM800_RX A2  // Connect SIM800L RX to Arduino digital pin 7
+#define PHONE_NUMBER "+639911441923"  // Replace with your desired phone number
+
+SoftwareSerial sim800Serial(SIM800_TX, SIM800_RX);
+
+void displayMessageOnOLED(String message) {
+  u8g.firstPage();
+  do {
+    u8g.setFont(u8g_font_6x10);
+
+    // Split the message into lines and display each line
+    int yOffset = 15;
+    int lineHeight = 10;
+
+    int start = 0;
+    int end = message.indexOf('\n');
+    while (end >= 0) {
+      String line = message.substring(start, end);
+      u8g.drawStr(0, yOffset, line.c_str());
+      yOffset += lineHeight;
+      start = end + 1;
+      end = message.indexOf('\n', start);
+    }
+
+    // Display the last line
+    if (start < message.length()) {
+      String lastLine = message.substring(start);
+      u8g.drawStr(0, yOffset, lastLine.c_str());
+    }
+  } while (u8g.nextPage());
+}
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  while (!Serial);
+
+  Serial.println("LoRa Receiver");
+
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+
+  // Initialize SIM800L serial communication
+  sim800Serial.begin(9600);
+
+  u8g.begin();
+}
+
+void sendSMS(String phoneNumber, String message) {
+  // AT command to set SMS mode
+  sim800Serial.println("AT+CMGF=1");
+  delay(1000);
+
+  // AT command to set phone number
+  sim800Serial.print("AT+CMGS=\"");
+  sim800Serial.print(phoneNumber);
+  sim800Serial.println("\"");
+  delay(1000);
+
+  // Send the message
+  sim800Serial.print(message);
+  delay(100);
+
+  // Send Ctrl+Z to indicate the end of the message
+  sim800Serial.write(0x1A);
+  delay(1000);
+}
+
+void loop() {
+  int packetSize = LoRa.parsePacket();
+  Serial.print("Received packet size: ");
+  Serial.println(packetSize);
+  if (packetSize) {
+    char buffer[150];  // Adjust the size based on your message length
+    int i = 0;
+
+    while (LoRa.available()) {
+      char c = LoRa.read();
+      buffer[i++] = c;
+    }
+
+    buffer[i] = '\0';  // Null-terminate the received string
+    Serial.print("Received packet '");
+    Serial.print(buffer);
+    Serial.print("' with RSSI ");
+    Serial.println(LoRa.packetRssi());
+
+    // Display the received message on the OLED
+    displayMessageOnOLED(buffer);
+
+    // Send SMS when a LoRa message is received
+    sendSMS(PHONE_NUMBER, "LoRa Message Received:\n" + String(buffer));
+    
+    delay(5000);  // Display for 5 seconds, adjust as needed
+  }
+}
